@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual Environment
+venv/
+env/
+.venv/
+
+# Environment Variables / Secrets
+.env
+secret.py
+
+# Bot State and Logs
+logs/
+state/
+*.log
