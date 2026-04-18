@@ -69,13 +69,13 @@ class SignalEngine:
 
         # ── LONG conditions ───────────────────────────────────────────────
         long_ema    = s.bullish_ema                           # fast > slow
-        long_rsi    = s.rsi < rsi_oversold                   # oversold pullback
-        long_macd   = s.macd_histogram > min_macd_hist       # positive / recovering hist
+        long_rsi    = s.rsi < rsi_overbought                  # not overbought (room to grow)
+        long_macd   = s.macd_histogram > min_macd_hist        # positive / recovering hist
         long_spread = s.ema_spread >= min_ema_spread          # spread wide enough
 
         # ── SHORT conditions ──────────────────────────────────────────────
         short_ema    = s.bearish_ema                          # fast < slow
-        short_rsi    = s.rsi > rsi_overbought                 # overbought exhaustion
+        short_rsi    = s.rsi > rsi_oversold                   # not oversold (room to fall)
         short_macd   = s.macd_histogram < -min_macd_hist      # negative hist
         short_spread = s.ema_spread <= -min_ema_spread
 
