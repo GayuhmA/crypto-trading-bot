@@ -41,8 +41,8 @@ class BotConfig:
     ema_fast_period:  int   = 9
     ema_slow_period:  int   = 21
     rsi_period:       int   = 14
-    rsi_oversold:     float = 30.0   # Default threshold — Self-Correction can tighten this
-    rsi_overbought:   float = 70.0   # Default threshold
+    rsi_oversold:     float = 40.0   # Lower bound of RSI entry zone (neutral band)
+    rsi_overbought:   float = 60.0   # Upper bound of RSI entry zone (neutral band)
     macd_fast:        int   = 12
     macd_slow:        int   = 26
     macd_signal:      int   = 9

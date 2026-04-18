@@ -66,8 +66,14 @@ class ExchangeClient:
         exchange = exchange_class(params)
 
         if cfg.testnet:
-            exchange.set_sandbox_mode(True)
-            log.info("Exchange: %s  [TESTNET / SANDBOX MODE]", cfg.exchange_id)
+            # Binance deprecated futures sandbox → use Demo Trading (CCXT v4.5.6+)
+            # Other exchanges (Bybit, etc.) still use classic sandbox mode
+            if "binance" in cfg.exchange_id.lower():
+                exchange.enable_demo_trading(True)
+                log.info("Exchange: %s  [DEMO TRADING MODE]", cfg.exchange_id)
+            else:
+                exchange.set_sandbox_mode(True)
+                log.info("Exchange: %s  [TESTNET / SANDBOX MODE]", cfg.exchange_id)
         else:
             log.info("Exchange: %s  [LIVE]", cfg.exchange_id)
 

@@ -68,15 +68,15 @@ class SignalEngine:
         )
 
         # ── LONG conditions ───────────────────────────────────────────────
-        long_ema    = s.bullish_ema                           # fast > slow
-        long_rsi    = s.rsi < rsi_overbought                  # not overbought (room to grow)
-        long_macd   = s.macd_histogram > min_macd_hist        # positive / recovering hist
-        long_spread = s.ema_spread >= min_ema_spread          # spread wide enough
+        long_ema    = s.bullish_ema                                  # fast > slow
+        long_rsi    = rsi_oversold <= s.rsi <= rsi_overbought        # RSI in neutral zone (pullback)
+        long_macd   = s.macd_histogram > min_macd_hist               # positive / recovering hist
+        long_spread = s.ema_spread >= min_ema_spread                  # spread wide enough
 
         # ── SHORT conditions ──────────────────────────────────────────────
-        short_ema    = s.bearish_ema                          # fast < slow
-        short_rsi    = s.rsi > rsi_oversold                   # not oversold (room to fall)
-        short_macd   = s.macd_histogram < -min_macd_hist      # negative hist
+        short_ema    = s.bearish_ema                                 # fast < slow
+        short_rsi    = rsi_oversold <= s.rsi <= rsi_overbought       # RSI in neutral zone (bounce)
+        short_macd   = s.macd_histogram < -min_macd_hist             # negative hist
         short_spread = s.ema_spread <= -min_ema_spread
 
         log.debug(
@@ -106,10 +106,10 @@ class SignalEngine:
         """
         if pos.side == "long":
             ema_reversal = s.bearish_ema          # trend has flipped
-            rsi_extreme  = s.rsi > 65             # overbought on the way out
+            rsi_extreme  = s.rsi > 70             # overbought — take profit
             return ema_reversal or rsi_extreme
 
         else:  # short
             ema_reversal = s.bullish_ema
-            rsi_extreme  = s.rsi < 35
+            rsi_extreme  = s.rsi < 30             # oversold — take profit
             return ema_reversal or rsi_extreme
