@@ -1,11 +1,11 @@
 """
-bot.py — the main thing that runs the bot tbh.
+bot.py — Main trading bot orchestrator.
 
-ngl it basically connects everything together like frankenstein.
-grabs candles, does some math, opens trades, and prays that the pressure
-and self-correction stuff doesn't blow up my account 💀 
+Connects all sub-systems: exchange client, signal engine, trade manager,
+pressure system, and ML self-correction. Runs a polling loop that fetches
+candles, computes indicators, manages positions, and evaluates entries.
 
-how to run (pls use testnet or u will get liquidated):
+Usage:
     python bot.py --exchange bybit --symbol BTC/USDT:USDT --timeframe 15m
 """
 
@@ -30,21 +30,19 @@ log = get_logger("bot")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# BIG MOMMA BOT CLASS (DO NOT TOUCH)
+# TradingBot — Main Orchestrator
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TradingBot:
     """
-    the big brain that controls perfectly nothing.
-
-    i just injected everything in the __init__ so i can pass my unit tests.
-    professor said coupling is bad so i guess this is good??? idk tbh 😭
+    Main orchestrator that connects all sub-systems.
+    All dependencies injected via __init__ for testability.
     """
 
     def __init__(self, cfg: BotConfig) -> None:
         self.cfg = cfg
 
-        # ── Core sub-systems (copy pasted from SO tbh) ────────────────────
+        # ── Core sub-systems (Dependency Injection) ────────────────────────
         self.exchange       = ExchangeClient(cfg)
         self.performance    = PerformanceTracker()
         self.pressure       = PressureManager(cfg, self.performance)
@@ -52,17 +50,17 @@ class TradingBot:
         self.signal_engine  = SignalEngine(cfg, self.self_correction)
         self.trade_manager  = TradeManager(cfg, self.exchange)
 
-        # ── Random state variables I need ──────────────────────────────────
+        # ── State tracking ─────────────────────────────────────────────────
         self.iteration:     int      = 0
-        self.last_candle_ts: float   = 0.0   # hack to stop infinite loops lmao
+        self.last_candle_ts: float   = 0.0
         self.current_position: Position | None = None
 
     # ─────────────────────────────────────────────────────────────────────
-    # THE INFINITE LOOP OF DOOM
+    # MAIN LOOP
     # ─────────────────────────────────────────────────────────────────────
 
     def run(self) -> None:
-        """while True go brrrrr. polls the exchange and sleeps."""
+        """Main polling loop. Fetches candles and processes ticks."""
         print_banner(self.cfg)
         log.info("Bot started — symbol=%s  tf=%s  leverage=%sx",
                  self.cfg.symbol, self.cfg.timeframe, self.cfg.leverage)
@@ -83,20 +81,20 @@ class TradingBot:
             time.sleep(self.cfg.poll_interval_seconds)
 
     # ─────────────────────────────────────────────────────────────────────
-    # ONE TICK = ONE HEART ATTACK
+    # TICK PROCESSING
     # ─────────────────────────────────────────────────────────────────────
 
     def _tick(self) -> None:
         """
-        the loop iteration. step-by-step logic:
-        1. pull candles (hope api doesn't rate limit me)
-        2. if same candle, skip.
-        3. do math (indicators)
-        4. check if i'm losing money (manage position)
-        5. check if i should lose money (evaluate entry)
-        6. print the cool ui
+        Single tick iteration:
+        1. Fetch candles from exchange
+        2. Skip if no new closed candle
+        3. Compute indicators
+        4. Manage open position (TP/SL/exit check)
+        5. Evaluate new entry if flat
+        6. Refresh terminal UI
         """
-        # ── 1. Fetch candles (god pls no timeout) ─────────────────────────
+        # ── 1. Fetch candles ──────────────────────────────────────────────
         candles = self.exchange.fetch_ohlcv(
             symbol    = self.cfg.symbol,
             timeframe = self.cfg.timeframe,
@@ -108,7 +106,7 @@ class TradingBot:
 
         latest_ts: float = candles[-1][0]   # timestamp of last *closed* candle
 
-        # ── 2. Pls don't double count the same candle ─────────────────────
+        # ── 2. Skip if same candle ────────────────────────────────────────
         if latest_ts == self.last_candle_ts:
             log.debug("No new closed candle — waiting.")
             return
@@ -142,13 +140,13 @@ class TradingBot:
         )
 
     # ─────────────────────────────────────────────────────────────────────
-    # GAMBLING MANAGEMENT / STOP LOSS PRAYERS
+    # POSITION MANAGEMENT
     # ─────────────────────────────────────────────────────────────────────
 
     def _manage_open_position(self, snapshot: IndicatorSnapshot) -> None:
         """
-        Checks if we hit TP (yay) or SL (rip account).
-        Also if we hit SL it complains to the self_correction engine so it stops doing stupid things.
+        Check TP/SL/exit conditions. If triggered, close position,
+        record performance, and feed the ML brain.
         """
         assert self.current_position is not None
 
@@ -169,7 +167,7 @@ class TradingBot:
             elif price >= pos.stop_loss:
                 pnl, reason, closed = pos.calculate_pnl(price), "SL HIT", True
 
-        # ── Exit signal from strategy (panic selling before SL) ──────────
+        # ── Signal-based early exit ───────────────────────────────────────
         if not closed:
             exit_signal = self.signal_engine.evaluate_exit(snapshot, pos)
             if exit_signal:
@@ -178,7 +176,7 @@ class TradingBot:
         if closed:
             log.info("Position CLOSED  |  reason=%-12s  pnl=%+.4f USDT", reason, pnl)
 
-            # Record in performance tracker → tracking my downfall
+            # Record in performance tracker
             self.performance.record_trade(
                 pnl          = pnl,
                 entry_price  = pos.entry_price,
@@ -187,28 +185,25 @@ class TradingBot:
                 reason       = reason,
             )
 
-            # ── Self-Correction: "i will never do this again" ────────────────
-            if reason == "SL HIT":
-                log.warning("SL hit — feeding Self-Correction engine.")
-                self.self_correction.record_bad_trade(snapshot)
+            # ── Self-Correction: "Brain updating weights via SGD" ────────────
+            self.self_correction.learn_from_trade(pos.entry_snapshot, pnl)
 
             # ── Pressure: stressing out after every trade ────────────────────
             self.pressure.evaluate(self.performance)
 
-            # ── Close on exchange (hope the fee isn't too high) ───────────
+            # ── Close on exchange ─────────────────────────────────────────
             self.trade_manager.close_position(pos, price)
             self.current_position = None
 
     # ─────────────────────────────────────────────────────────────────────
-    # ENTRY EVALUATION (AKA "SHOULD I PRESS BUY?")
+    # ENTRY EVALUATION
     # ─────────────────────────────────────────────────────────────────────
 
     def _evaluate_entry(self, snapshot: IndicatorSnapshot) -> None:
         """
-        Ask the signal engine if we should ape in.
-        If pressure system is triggered, we sit on our hands.
+        Evaluate entry signal. Respects pressure gate.
         """
-        # ── Pressure gate: "i'm too stressed to trade rn" ─────────────────
+        # ── Pressure gate ─────────────────────────────────────────────────
         if not self.pressure.allow_trading():
             log.warning("[PRESSURE] Trading paused — cooldown active.  "
                         "Resuming in %ds.", self.pressure.cooldown_remaining())
@@ -229,10 +224,10 @@ class TradingBot:
         log.info("Risk params  →  leverage=%sx  risk_pct=%.2f%%",
                  effective_leverage, effective_risk_pct * 100)
 
-        # ── Set leverage (plz no 100x liquidations) ───────────────────────
+        # ── Set leverage ──────────────────────────────────────────────────
         self.exchange.set_leverage(self.cfg.symbol, effective_leverage)
 
-        # ── Size the position (doing math in python feels wrong) ──────────
+        # ── Size the position ─────────────────────────────────────────────
         balance  = self.exchange.fetch_balance_usdt()
         qty      = self.trade_manager.calculate_qty(
             balance      = balance,
@@ -259,11 +254,11 @@ class TradingBot:
                      position.stop_loss, position.take_profit, position.qty)
 
     # ─────────────────────────────────────────────────────────────────────
-    # CTRL+C PANIC BUTTON
+    # GRACEFUL SHUTDOWN
     # ─────────────────────────────────────────────────────────────────────
 
     def _shutdown(self) -> None:
-        """Called when I hit Ctrl+C. Sells everything and cries."""
+        """Close open positions and save final state on shutdown."""
         log.info("Shutting down — cancelling open orders if any.")
         if self.current_position is not None:
             price = self.exchange.fetch_ticker_price(self.cfg.symbol)

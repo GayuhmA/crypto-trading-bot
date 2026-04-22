@@ -1,14 +1,14 @@
 """
-trade_manager.py — calculates how much to bet.
+trade_manager.py — Position sizing and order execution.
 
-risk amount = balance * risk_pct (so we don't lose it all at once).
-then places MARKET orders everywhere bc LIMIT orders make my brain hurt.
+Calculates position size based on risk percentage and stop-loss distance,
+then places market orders via the exchange client.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 
 from config import BotConfig
 from indicators import IndicatorSnapshot
@@ -24,19 +24,20 @@ log = get_logger("trade_manager")
 
 @dataclass
 class Position:
-    """our active gamble."""
+    """Represents an active trading position."""
 
     side:        str    # "long" | "short"
     entry_price: float
     qty:         float  # position size in base currency
     stop_loss:   float
     take_profit: float
-    opened_at:   str   = field(default_factory=lambda: datetime.utcnow().strftime("%H:%M:%S"))
+    opened_at:   str   = field(default_factory=lambda: datetime.now(timezone.utc).strftime("%H:%M:%S"))
     order_id:    str   = ""
+    entry_snapshot: IndicatorSnapshot | None = None
 
     def calculate_pnl(self, current_price: float) -> float:
         """
-        did i make money?
+        Calculate unrealised PnL at the given price.
         """
         if self.side == "long":
             return (current_price - self.entry_price) * self.qty
@@ -50,7 +51,7 @@ class Position:
 
 class TradeManager:
     """
-    pushes the buy/sell button.
+    Handles position sizing, opening, and closing of trades.
     """
 
     def __init__(self, cfg: BotConfig, exchange) -> None:
@@ -69,7 +70,7 @@ class TradeManager:
         stop_loss_pct: float,
     ) -> float:
         """
-        how much dogecoin do i buy with $10 risk?
+        Calculate position size based on risk amount and stop-loss distance.
         """
         if entry_price <= 0 or stop_loss_pct <= 0:
             log.error("Invalid inputs for qty calc: entry=%.4f  sl_pct=%.4f",
@@ -96,7 +97,7 @@ class TradeManager:
         qty:      float,
     ) -> Position | None:
         """
-        yolo.
+        Place a market order and return the Position object.
         """
         side  = "long" if signal == Signal.LONG else "short"
         price = snapshot.close_price
@@ -129,6 +130,7 @@ class TradeManager:
             stop_loss   = round(sl, 4),
             take_profit = round(tp, 4),
             order_id    = order_id,
+            entry_snapshot = snapshot,
         )
 
     # ─────────────────────────────────────────────────────────────────────
@@ -137,7 +139,7 @@ class TradeManager:
 
     def close_position(self, position: Position, current_price: float) -> None:
         """
-        sells it.
+        Close the given position with a market order.
         """
         close_side = "sell" if position.side == "long" else "buy"
 

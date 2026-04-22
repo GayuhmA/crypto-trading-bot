@@ -1,8 +1,8 @@
 """
-logger.py — this prints the UI so my project looks good.
+logger.py — Terminal UI and logging configuration.
 
-i used pure print() with some weird string formatting i found on stackoverflow. 
-please don't grade my code based on this file.
+Provides coloured console output, file logging, startup banner,
+and the live status panel.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import logging
 import os
 import sys
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -87,7 +87,7 @@ class ColouredFormatter(logging.Formatter):
     """
 
     def format(self, record: logging.LogRecord) -> str:
-        ts    = datetime.utcnow().strftime("%H:%M:%S")
+        ts    = datetime.now(timezone.utc).strftime("%H:%M:%S")
         level = _LEVEL_LABELS.get(record.levelno, "???")
         col   = _LEVEL_COLOURS.get(record.levelno, C.RESET)
         name  = record.name.ljust(14)
@@ -110,9 +110,7 @@ _initialised: set[str] = set()
 
 def get_logger(name: str, level: str = "INFO") -> logging.Logger:
     """
-    returns a cool logger.
-
-    also saves to a file so i can see why i lost money yesterday.
+    Returns a configured logger with console and file handlers.
     """
     logger = logging.getLogger(name)
 
@@ -131,7 +129,7 @@ def get_logger(name: str, level: str = "INFO") -> logging.Logger:
     # ── File handler (evidence of my bad trades) ───────────────────────
     log_dir = "logs"
     os.makedirs(log_dir, exist_ok=True)
-    today   = datetime.utcnow().strftime("%Y-%m-%d")
+    today   = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     fh      = logging.FileHandler(f"{log_dir}/bot_{today}.log", encoding="utf-8")
     fh.setFormatter(logging.Formatter(
         "[%(asctime)s] %(levelname)-5s %(name)-14s → %(message)s",
@@ -157,7 +155,7 @@ BANNER = r"""
 
 
 def print_banner(cfg: "BotConfig") -> None:
-    """this took me forever to align correctly."""
+    """Prints the startup configuration banner."""
     print(C.coloured(BANNER, C.BRIGHT_CYAN, C.BOLD))
     
     row1 = f"  Exchange : {cfg.exchange_id}      Symbol : {cfg.symbol}"
@@ -178,7 +176,7 @@ def print_banner(cfg: "BotConfig") -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _pct_bar(value: float, width: int = 20) -> str:
-    """this draws the blocky loading bar thing."""
+    """Draws a percentage bar using block characters."""
     filled = int(round(value * width))
     bar    = "█" * filled + "░" * (width - filled)
     return bar
@@ -196,8 +194,7 @@ def print_status_panel(
     position:    "Position | None",
 ) -> None:
     """
-    this function prints the huge box at the bottom.
-    it just prints new lines until the old box goes up. pure UI hacking.
+    Prints the live status panel to the terminal.
     """
     summary = performance.summary()
     win_r   = summary.get("win_rate",  0.0)
@@ -216,7 +213,7 @@ def print_status_panel(
     def rate_col(rate: float, other: float) -> str:
         return C.BRIGHT_GREEN if rate >= other else C.BRIGHT_RED
 
-    ts = datetime.utcnow().strftime("%Y-%m-%d  %H:%M:%S UTC")
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d  %H:%M:%S UTC")
 
     print()
     print(C.coloured("╔" + "═" * 62 + "╗", C.BLUE))

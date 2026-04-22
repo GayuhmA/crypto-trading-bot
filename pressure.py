@@ -1,9 +1,9 @@
 """
-pressure.py — the panic system.
+pressure.py — Adaptive risk management system.
 
-when i lose money this thing stops the bot from gambling away the rest.
-NORMAL -> REDUCED -> HIGH PRESSURE (basically touching grass for 15 mins).
-then it goes back down when it wins again.
+Escalates through NORMAL → REDUCED → HIGH PRESSURE states
+based on consecutive losses and loss rate. Reduces leverage
+and risk percentage, and pauses trading during cooldown.
 """
 
 from __future__ import annotations
@@ -34,7 +34,8 @@ class PressureState(Enum):
 
 class PressureManager:
     """
-    watches me lose money and cuts my leverage.
+    Manages trading pressure state based on performance.
+    Reduces leverage and risk on losses, pauses trading in HIGH state.
     """
 
     # Number of wins needed to stop panicking
@@ -57,7 +58,7 @@ class PressureManager:
 
     def evaluate(self, perf: PerformanceTracker) -> None:
         """
-        update the panic level based on L's.
+        Update pressure state based on performance metrics.
         """
         loss_exceeds_win = perf.loss_exceeds_win
         consec_losses    = perf.consecutive_losses
@@ -115,7 +116,7 @@ class PressureManager:
 
     def allow_trading(self) -> bool:
         """
-        should we place order? if HIGH, answer is no.
+        Returns False if trading is paused (HIGH state with active cooldown).
         """
         if self.state == PressureState.HIGH:
             if self._cooldown_expired():
@@ -127,7 +128,7 @@ class PressureManager:
         return True
 
     def effective_leverage(self) -> int:
-        """give me smaller leverage pls."""
+        """Returns effective leverage (reduced during REDUCED/HIGH state)."""
         if self.state == PressureState.NORMAL:
             return self.cfg.leverage
 
@@ -136,7 +137,7 @@ class PressureManager:
         return reduced
 
     def effective_risk_pct(self) -> float:
-        """shrink my risk so i don't get liquidated."""
+        """Returns effective risk percentage (reduced during REDUCED/HIGH state)."""
         if self.state == PressureState.NORMAL:
             return self.cfg.risk_pct
 
@@ -145,7 +146,7 @@ class PressureManager:
         return reduced
 
     def cooldown_remaining(self) -> int:
-        """time left until i can gamble again."""
+        """Returns remaining cooldown time in seconds."""
         if self.state != PressureState.HIGH or self._cooldown_start == 0:
             return 0
         elapsed = time.monotonic() - self._cooldown_start
@@ -153,7 +154,7 @@ class PressureManager:
         return max(0, int(remaining))
 
     def state_label(self) -> str:
-        """print this on the UI."""
+        """Returns a human-readable label for the current pressure state."""
         labels = {
             PressureState.NORMAL:  "NORMAL",
             PressureState.REDUCED: "REDUCED ⚠",
@@ -166,7 +167,7 @@ class PressureManager:
     # ─────────────────────────────────────────────────────────────────────
 
     def _enter_high_pressure(self) -> None:
-        """full panic mode on."""
+        """Enter HIGH pressure state and start cooldown timer."""
         self.state            = PressureState.HIGH
         self._cooldown_start  = time.monotonic()
         log.error(
@@ -176,7 +177,7 @@ class PressureManager:
         )
 
     def _cooldown_expired(self) -> bool:
-        """can i resume trading?"""
+        """Returns True if cooldown period has elapsed."""
         if self._cooldown_start == 0:
             return False
         elapsed = time.monotonic() - self._cooldown_start

@@ -1,22 +1,19 @@
 """
-self_correction.py — "Machine Learning" 
+self_correction.py — ML Brain (Logistic Regression)
 
-Concept:
-Every time we take an L, we write down the indicators so we don't do it again.
-Basically, if RSI was 30 and we still hit Stop Loss, next time we wait for RSI 28.
-Same for MACD and EMA.
+1-layer Neural Network built purely in Numpy.
+Uses Gradient Descent to weigh the importance of features like
+RSI, Volatility, hour of day, and EMA spread.
 
-Persistence:
-Saves to JSON so when I accidentally close the terminal my bot still remembers
-its traumas.
+All features are normalized via np.tanh() to prevent gradient
+domination by large-scale features (e.g. EMA spread in USD).
 """
 
 from __future__ import annotations
 
 import json
 import os
-from collections import deque
-from dataclasses import asdict, dataclass
+import numpy as np
 from typing import Any
 
 from config import BotConfig
@@ -26,176 +23,149 @@ from logger import get_logger
 log = get_logger("self_correction")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# BAD TRADE RECORD
-# ─────────────────────────────────────────────────────────────────────────────
-
-@dataclass
-class BadTradeRecord:
-    """screenshot of the indicators right before disaster struck."""
-    rsi:            float
-    ema_spread:     float
-    macd_histogram: float
-    close_price:    float
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ENGINE
-# ─────────────────────────────────────────────────────────────────────────────
-
 class SelfCorrectionEngine:
     """
-    learns from stop-loss hits so my balance doesn't hit 0.
+    Logistic Regression brain for trade quality prediction.
+    Learns from every closed trade via Stochastic Gradient Descent.
     """
+
+    # Number of features: [RSI, MACD_hist, EMA_spread, volatility, hour, bias]
+    _NUM_FEATURES = 6
 
     def __init__(self, cfg: BotConfig) -> None:
         self.cfg = cfg
+        self.learning_rate = cfg.ml_learning_rate
 
-        # Ring buffer: keeps only the last N bad trade snapshots
-        self._bad_trades: deque[BadTradeRecord] = deque(maxlen=cfg.sc_max_memory)
+        # Small random initialization to avoid symmetry breaking
+        rng = np.random.default_rng(42)
+        self._weights = rng.normal(0, 0.01, self._NUM_FEATURES)
 
-        # Dynamic thresholds — keys must match names used in get_threshold()
-        self._thresholds: dict[str, float] = {
-            "rsi_oversold":   cfg.rsi_oversold,    # can only increase (tighten)
-            "rsi_overbought": cfg.rsi_overbought,  # can only decrease
-            "min_macd_hist":  0.0,                 # minimum |histogram| for entry
-            "min_ema_spread": 0.0,                 # minimum |EMA spread| for entry
-        }
+        # Warmup & persist tracking
+        self._trade_count: int = 0
+        self._trades_since_save: int = 0
 
-        # Load persisted state from disk (survives restarts)
         self._load()
 
     # ─────────────────────────────────────────────────────────────────────
-    # RECORD A BAD TRADE
+    # FEATURE EXTRACTION (all normalized to ~[-1, 1])
     # ─────────────────────────────────────────────────────────────────────
 
-    def record_bad_trade(self, snapshot: IndicatorSnapshot) -> None:
+    def _extract_features(self, s: IndicatorSnapshot) -> np.ndarray:
         """
-        logs the L and tightens the rules.
+        Normalize all features to similar ranges using np.tanh().
+        Prevents gradient domination by large-scale features.
         """
-        record = BadTradeRecord(
-            rsi            = snapshot.rsi,
-            ema_spread     = snapshot.ema_spread,
-            macd_histogram = snapshot.macd_histogram,
-            close_price    = snapshot.close_price,
-        )
-        self._bad_trades.append(record)
+        price = max(s.close_price, 1.0)
+        return np.array([
+            (s.rsi - 50.0) / 50.0,                     # RSI: [-1, 1]
+            np.tanh(s.macd_histogram / (price * 0.001)),   # MACD hist: price-relative
+            np.tanh(s.ema_spread / (price * 0.01)),     # EMA spread: relative to 1% of price
+            np.tanh(s.candle_volatility / 2.0),         # Volatility %: ~[-1, 1]
+            s.hour_of_day / 24.0,                       # Hour: [0, 1]
+            1.0                                         # Bias term
+        ], dtype=float)
 
-        log.warning(
-            "[SC] Bad trade recorded  RSI=%.1f  EMA_spread=%.5f  MACD_hist=%.5f  "
-            "Total bad trades in memory: %d",
-            record.rsi, record.ema_spread, record.macd_histogram,
-            len(self._bad_trades),
-        )
+    # ─────────────────────────────────────────────────────────────────────
+    # PREDICTION
+    # ─────────────────────────────────────────────────────────────────────
 
-        # ── Adjust thresholds based on the new evidence ───────────────────
-        self._adjust_thresholds(record)
+    def predict_success(self, snapshot: IndicatorSnapshot) -> float:
+        """
+        Returns confidence score [0, 1].
+        During warmup period, always returns 1.0 to allow learning.
+        """
+        # Warmup: allow all trades for the first N trades
+        if self._trade_count < self.cfg.ml_warmup_trades:
+            log.debug(
+                "[SC-Brain] Warmup mode (%d/%d trades) — allowing all signals.",
+                self._trade_count, self.cfg.ml_warmup_trades,
+            )
+            return 1.0
 
-        # ── Log updated thresholds ────────────────────────────────────────
+        features = self._extract_features(snapshot)
+        z = np.dot(self._weights, features)
+        z = np.clip(z, -20.0, 20.0)
+        prob = 1.0 / (1.0 + np.exp(-z))
+
+        log.debug("[SC-Brain] Confidence: %.2f%% (z=%.4f)", prob * 100, z)
+        return float(prob)
+
+    # ─────────────────────────────────────────────────────────────────────
+    # LEARNING (SGD)
+    # ─────────────────────────────────────────────────────────────────────
+
+    def learn_from_trade(self, snapshot: IndicatorSnapshot | None, pnl: float) -> None:
+        """
+        Update weights using Binary Cross-Entropy gradient.
+        Called after every closed trade (TP, SL, or SIGNAL EXIT).
+        """
+        if snapshot is None:
+            return
+
+        self._trade_count += 1
+        features = self._extract_features(snapshot)
+
+        # Target: 1.0 (Win) or 0.0 (Loss)
+        target = 1.0 if pnl > 0.0 else 0.0
+
+        # Forward pass
+        z = np.clip(np.dot(self._weights, features), -20.0, 20.0)
+        prediction = 1.0 / (1.0 + np.exp(-z))
+
+        # Gradient Descent (Stochastic)
+        error = prediction - target
+        self._weights -= self.learning_rate * error * features
+
         log.info(
-            "[SC] Updated thresholds  rsi_oversold=%.1f  rsi_overbought=%.1f  "
-            "min_macd_hist=%.5f  min_ema_spread=%.5f",
-            self._thresholds["rsi_oversold"],
-            self._thresholds["rsi_overbought"],
-            self._thresholds["min_macd_hist"],
-            self._thresholds["min_ema_spread"],
+            "[SC-Brain] Learned from trade #%d  pnl=%+.4f  target=%.0f  "
+            "pred=%.3f  error=%+.3f",
+            self._trade_count, pnl, target, prediction, error,
         )
 
-    # ─────────────────────────────────────────────────────────────────────
-    # GET THRESHOLD — used by SignalEngine
-    # ─────────────────────────────────────────────────────────────────────
-
-    def get_threshold(self, name: str, default: float) -> float:
-        """
-        gets the new strict threshold bc the default one was trash.
-        """
-        return self._thresholds.get(name, default)
-
-    # ─────────────────────────────────────────────────────────────────────
-    # ADJUSTMENT LOGIC
-    # ─────────────────────────────────────────────────────────────────────
-
-    def _adjust_thresholds(self, bad: BadTradeRecord) -> None:
-        """
-        makes the rules stricter based on our traumas.
-        """
-        rsi_step   = self.cfg.sc_rsi_tighten_step
-        macd_step  = self.cfg.sc_macd_penalty_step
-        ema_step   = self.cfg.sc_ema_spread_penalty_pct * bad.close_price
-
-        cur_oversold   = self._thresholds["rsi_oversold"]
-        cur_overbought = self._thresholds["rsi_overbought"]
-        cur_macd_min   = self._thresholds["min_macd_hist"]
-        cur_ema_min    = self._thresholds["min_ema_spread"]
-
-        # ── RSI: tighten if SL occurred while RSI was near the threshold ──
-        if bad.rsi <= cur_oversold + 5:   # long entry zone
-            new_oversold = min(
-                cur_oversold + rsi_step,
-                self.cfg.rsi_oversold + self.cfg.sc_max_rsi_tighten,
-            )
-            if new_oversold != cur_oversold:
-                self._thresholds["rsi_oversold"] = new_oversold
-                log.info("[SC] RSI oversold tightened: %.1f → %.1f", cur_oversold, new_oversold)
-
-        if bad.rsi >= cur_overbought - 5:  # short entry zone
-            new_overbought = max(
-                cur_overbought - rsi_step,
-                self.cfg.rsi_overbought - self.cfg.sc_max_rsi_tighten,
-            )
-            if new_overbought != cur_overbought:
-                self._thresholds["rsi_overbought"] = new_overbought
-                log.info("[SC] RSI overbought tightened: %.1f → %.1f", cur_overbought, new_overbought)
-
-        # ── MACD: raise minimum if histogram was weak ──────────────────────
-        if abs(bad.macd_histogram) < cur_macd_min + macd_step * 3:
-            self._thresholds["min_macd_hist"] = cur_macd_min + macd_step
-            log.info("[SC] min_macd_hist raised: %.5f → %.5f",
-                     cur_macd_min, self._thresholds["min_macd_hist"])
-
-        # ── EMA spread: raise minimum if spread was shallow ───────────────
-        if abs(bad.ema_spread) < cur_ema_min + ema_step * 3:
-            self._thresholds["min_ema_spread"] = cur_ema_min + ema_step
-            log.info("[SC] min_ema_spread raised: %.5f → %.5f",
-                     cur_ema_min, self._thresholds["min_ema_spread"])
+        # Throttled persistence (every N trades)
+        self._trades_since_save += 1
+        if self._trades_since_save >= self.cfg.ml_persist_every_n:
+            self.persist()
+            self._trades_since_save = 0
 
     # ─────────────────────────────────────────────────────────────────────
     # PERSISTENCE
     # ─────────────────────────────────────────────────────────────────────
 
     def persist(self) -> None:
-        """saves the trauma to json file."""
+        """Save weights and trade count to disk."""
         os.makedirs(os.path.dirname(self.cfg.sc_persist_path), exist_ok=True)
         payload: dict[str, Any] = {
-            "thresholds": self._thresholds,
-            "bad_trades": [asdict(bt) for bt in self._bad_trades],
+            "weights": self._weights.tolist(),
+            "trade_count": self._trade_count,
         }
         with open(self.cfg.sc_persist_path, "w", encoding="utf-8") as fh:
             json.dump(payload, fh, indent=2)
-        log.info("[SC] State persisted → %s", self.cfg.sc_persist_path)
+        log.info("[SC-Brain] State persisted → %s", self.cfg.sc_persist_path)
 
     def _load(self) -> None:
-        """loads the trauma back in."""
+        """Load weights from disk if available."""
         path = self.cfg.sc_persist_path
         if not os.path.exists(path):
-            log.info("[SC] No persisted state found — starting fresh.")
+            log.info("[SC-Brain] No memory found. Starting with random weights.")
             return
 
         try:
             with open(path, "r", encoding="utf-8") as fh:
                 payload = json.load(fh)
 
-            # Restore thresholds
-            for k, v in payload.get("thresholds", {}).items():
-                self._thresholds[k] = float(v)
+            w_list = payload.get("weights", [])
+            if len(w_list) == self._NUM_FEATURES:
+                self._weights = np.array(w_list, dtype=float)
+                self._trade_count = int(payload.get("trade_count", 0))
+                log.info(
+                    "[SC-Brain] Memory loaded! trades=%d  weights=%s",
+                    self._trade_count, self._weights,
+                )
+            else:
+                log.warning("[SC-Brain] Weight dimension mismatch! Resetting brain.")
+                self._trade_count = 0
+                self._trades_since_save = 0
 
-            # Restore bad-trade memory
-            for raw in payload.get("bad_trades", []):
-                self._bad_trades.append(BadTradeRecord(**raw))
-
-            log.info(
-                "[SC] State loaded from %s  (%d bad trades in memory)",
-                path, len(self._bad_trades),
-            )
         except (json.JSONDecodeError, KeyError, TypeError) as exc:
-            log.error("[SC] Failed to load persisted state: %s — starting fresh.", exc)
+            log.error("[SC-Brain] Failed to load memory: %s", exc)

@@ -37,15 +37,17 @@ class BotConfig:
     stop_loss_pct:  float = 0.005   # SL distance as fraction of entry price (0.5%)
     take_profit_rr: float = 2.0     # Reward-to-risk ratio for TP (2 = 2×SL distance)
 
-    # ── Indicator parameters (copypasted from youtube) ─────────────────────
+    # ── Indicator parameters ──────────────────────────────────────────────
     ema_fast_period:  int   = 9
     ema_slow_period:  int   = 21
     rsi_period:       int   = 14
-    rsi_oversold:     float = 40.0   # Lower bound of RSI entry zone (neutral band)
-    rsi_overbought:   float = 60.0   # Upper bound of RSI entry zone (neutral band)
+    rsi_oversold:     float = 35.0   # RSI below this → oversold (LONG entry zone)
+    rsi_overbought:   float = 65.0   # RSI above this → overbought (SHORT entry zone)
     macd_fast:        int   = 12
     macd_slow:        int   = 26
     macd_signal:      int   = 9
+    min_macd_histogram: float = 0.0  # Minimum |MACD histogram| for entry
+    min_ema_spread_pct: float = 0.0  # Minimum EMA spread as fraction of price
 
     # ── Data ───────────────────────────────────────────────────────────────
     candle_limit: int = 200   # How many candles to fetch per tick (must be > slowest period)
@@ -53,22 +55,19 @@ class BotConfig:
     # ── Polling ────────────────────────────────────────────────────────────
     poll_interval_seconds: int = 30   # How often the main loop wakes up
 
-    # ── Pressure system (the panic button) ─────────────────────────────────
-    # "High Pressure" turns on if my code loses too much money.
-    # Basically tells the bot to touch grass for 15 mins.
+    # ── Pressure system ───────────────────────────────────────────────────
+    # "High Pressure" pauses trading after consecutive losses.
     pressure_consecutive_loss_threshold: int   = 3
-    pressure_leverage_multiplier:        float = 0.5   # leverage *= this in High Pressure
-    pressure_risk_multiplier:            float = 0.5   # risk_pct *= this in High Pressure
+    pressure_leverage_multiplier:        float = 0.5   # leverage *= this in REDUCED/HIGH
+    pressure_risk_multiplier:            float = 0.5   # risk_pct *= this in REDUCED/HIGH
     pressure_cooldown_seconds:           int   = 900   # 15-minute cooldown pause
 
-    # ── Self-Correction (ML buzzword to get A+ on project) ─────────────────
-    # Maximum tightening applied to RSI thresholds from learning.
-    sc_max_rsi_tighten:       float = 10.0  # Oversold can be raised by up to +10 pts
-    sc_rsi_tighten_step:      float = 2.0   # Each SL hit raises the threshold by 2 pts
-    sc_macd_penalty_step:     float = 0.0001
-    sc_ema_spread_penalty_pct: float = 0.001  # Require EMA spread >= this fraction
+    # ── ML Self-Correction (Logistic Regression) ──────────────────────────
+    ml_learning_rate:         float = 0.01   # SGD step size (lower = more stable)
+    ml_confidence_threshold:  float = 0.45   # Minimum confidence to approve a signal
+    ml_warmup_trades:         int   = 10     # Allow all signals during first N trades
+    ml_persist_every_n:       int   = 5      # Save weights to disk every N trades
     sc_persist_path:          str   = "state/self_correction.json"
-    sc_max_memory:            int   = 50    # Keep last N bad-trade snapshots
 
     # ── Logging ────────────────────────────────────────────────────────────
     log_level: str = "INFO"

@@ -53,31 +53,27 @@ class SignalEngine:
 
     def evaluate_entry(self, s: IndicatorSnapshot) -> Signal:
         """
-        returns LONG, SHORT, or NONE (aka boring).
+        Returns LONG, SHORT, or NONE based on indicator alignment
+        and ML brain confidence.
         """
-        # Pull dynamic thresholds from Self-Correction engine
-        rsi_oversold    = self.sc.get_threshold("rsi_oversold",    self.cfg.rsi_oversold)
-        rsi_overbought  = self.sc.get_threshold("rsi_overbought",  self.cfg.rsi_overbought)
-        min_macd_hist   = self.sc.get_threshold("min_macd_hist",   0.0)
-        min_ema_spread  = self.sc.get_threshold("min_ema_spread",  0.0)
-
-        log.debug(
-            "Entry thresholds → rsi_oversold=%.1f  rsi_overbought=%.1f  "
-            "min_macd_hist=%.5f  min_ema_spread=%.5f",
-            rsi_oversold, rsi_overbought, min_macd_hist, min_ema_spread,
-        )
+        # Pull thresholds from config
+        rsi_oversold    = self.cfg.rsi_oversold
+        rsi_overbought  = self.cfg.rsi_overbought
+        min_macd_hist   = self.cfg.min_macd_histogram
+        price           = s.close_price
+        min_spread      = self.cfg.min_ema_spread_pct * price
 
         # ── LONG conditions ───────────────────────────────────────────────
         long_ema    = s.bullish_ema                                  # fast > slow
-        long_rsi    = rsi_oversold <= s.rsi <= rsi_overbought        # RSI in neutral zone (pullback)
+        long_rsi    = s.rsi < rsi_oversold                           # RSI oversold → bounce
         long_macd   = s.macd_histogram > min_macd_hist               # positive / recovering hist
-        long_spread = s.ema_spread >= min_ema_spread                  # spread wide enough
+        long_spread = s.ema_spread >= min_spread                     # spread wide enough
 
         # ── SHORT conditions ──────────────────────────────────────────────
         short_ema    = s.bearish_ema                                 # fast < slow
-        short_rsi    = rsi_oversold <= s.rsi <= rsi_overbought       # RSI in neutral zone (bounce)
+        short_rsi    = s.rsi > rsi_overbought                       # RSI overbought → drop
         short_macd   = s.macd_histogram < -min_macd_hist             # negative hist
-        short_spread = s.ema_spread <= -min_ema_spread
+        short_spread = s.ema_spread <= -min_spread
 
         log.debug(
             "LONG  → ema=%s rsi=%s macd=%s spread=%s",
@@ -88,13 +84,29 @@ class SignalEngine:
             short_ema, short_rsi, short_macd, short_spread,
         )
 
+        signal = Signal.NONE
         if long_ema and long_rsi and long_macd and long_spread:
-            return Signal.LONG
+            signal = Signal.LONG
+        elif short_ema and short_rsi and short_macd and short_spread:
+            signal = Signal.SHORT
 
-        if short_ema and short_rsi and short_macd and short_spread:
-            return Signal.SHORT
+        if signal != Signal.NONE:
+            # Check ML brain confidence
+            confidence = self.sc.predict_success(s)
+            threshold  = self.cfg.ml_confidence_threshold
+            if confidence < threshold:
+                log.info(
+                    "[SC-Brain] Rejected %s (confidence=%.1f%% < %.1f%%)",
+                    signal.name, confidence * 100, threshold * 100,
+                )
+                return Signal.NONE
+            else:
+                log.info(
+                    "[SC-Brain] Approved %s (confidence=%.1f%% >= %.1f%%)",
+                    signal.name, confidence * 100, threshold * 100,
+                )
 
-        return Signal.NONE
+        return signal
 
     # ─────────────────────────────────────────────────────────────────────
     # EXIT SIGNAL
@@ -102,14 +114,14 @@ class SignalEngine:
 
     def evaluate_exit(self, s: IndicatorSnapshot, pos: Position) -> bool:
         """
-        panic sell method. returns True if we should run away.
+        Returns True if exit conditions are met.
+        Requires both RSI extreme AND MACD momentum reversal.
         """
         if pos.side == "long":
-            ema_reversal = s.bearish_ema          # trend has flipped
-            rsi_extreme  = s.rsi > 70             # overbought — take profit
-            return ema_reversal or rsi_extreme
-
+            rsi_extreme  = s.rsi > 70             # overbought
+            macd_turning = s.macd_histogram < 0    # momentum reversed
+            return rsi_extreme and macd_turning
         else:  # short
-            ema_reversal = s.bullish_ema
-            rsi_extreme  = s.rsi < 30             # oversold — take profit
-            return ema_reversal or rsi_extreme
+            rsi_extreme  = s.rsi < 30             # oversold
+            macd_turning = s.macd_histogram > 0    # momentum reversed
+            return rsi_extreme and macd_turning

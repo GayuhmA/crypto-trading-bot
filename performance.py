@@ -1,18 +1,14 @@
 """
-performance.py — keeps track of how much i'm losing.
+performance.py — Trade performance tracker.
 
-this guy watches everything:
-  • win count / loss count
-  • pnl
-  • how many times i lost in a row (so pressure manager can yell at me)
-
-literally just a tracker.
+Tracks win/loss counts, PnL, consecutive losses,
+and provides statistics for the pressure system.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from logger import get_logger
@@ -26,7 +22,7 @@ log = get_logger("performance")
 
 @dataclass
 class TradeRecord:
-    """receipt for a trade whether i won or got rekt."""
+    """Record of a completed trade with its outcome."""
     timestamp:   str
     side:        str    # "long" or "short"
     entry_price: float
@@ -49,9 +45,8 @@ class TradeRecord:
 
 class PerformanceTracker:
     """
-    holds all the trade receipts.
-
-    thread safety? bro what are threads. we run in one loop.
+    Tracks all trade results and computes statistics.
+    Single-threaded (runs in one event loop).
     """
 
     def __init__(self) -> None:
@@ -71,10 +66,10 @@ class PerformanceTracker:
         reason:      str,
     ) -> None:
         """
-        add a trade and print it so i can cry watching my terminal.
+        Record a completed trade and log the result.
         """
         record = TradeRecord(
-            timestamp   = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+            timestamp   = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
             side        = side,
             entry_price = entry_price,
             exit_price  = exit_price,
@@ -83,13 +78,13 @@ class PerformanceTracker:
         )
         self._trades.append(record)
 
-        # ── Update consecutive loss counter (pain) ───────────────────────────────
+        # ── Update consecutive loss counter ───────────────────────────────
         if record.is_loss:
             self._consecutive_losses += 1
         else:
-            self._consecutive_losses = 0  # we are so back
+            self._consecutive_losses = 0
 
-        # ── Log trade result (flexing the emoji) ──────────────────────────────────────────────
+        # ── Log trade result ──────────────────────────────────────────────
         win_r  = self.win_rate
         loss_r = self.loss_rate
         emoji  = "✅" if record.is_win else "❌"
@@ -128,12 +123,12 @@ class PerformanceTracker:
 
     @property
     def win_rate(self) -> float:
-        """Win percentage. If we haven't traded it's 0 to avoid DivByZeroError lol."""
+        """Win percentage (0.0 if no trades)."""
         return self.wins / self.total_trades if self.total_trades else 0.0
 
     @property
     def loss_rate(self) -> float:
-        """Loss percentage. Pls stay low."""
+        """Loss percentage."""
         return self.losses / self.total_trades if self.total_trades else 0.0
 
     @property
@@ -142,12 +137,12 @@ class PerformanceTracker:
 
     @property
     def consecutive_losses(self) -> int:
-        """How many L's i took in a row"""
+        """Current consecutive loss streak."""
         return self._consecutive_losses
 
     @property
     def loss_exceeds_win(self) -> bool:
-        """Returns True if i'm losing more than im winning."""
+        """Returns True if loss rate exceeds win rate (min 4 trades)."""
         return self.total_trades >= 4 and self.loss_rate > self.win_rate
 
     def summary(self) -> dict[str, Any]:

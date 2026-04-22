@@ -14,6 +14,7 @@ list of things my bot looks at to lose money:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 import numpy as np
 
@@ -45,6 +46,11 @@ class IndicatorSnapshot:
     macd_line:      float   # MACD line
     macd_signal:    float   # Signal line
     macd_histogram: float   # MACD line − signal line (+ = bullish momentum)
+
+    # ML Learning Features
+    hour_of_day:       float
+    candle_volatility: float
+
 
     @property
     def bullish_ema(self) -> bool:
@@ -157,11 +163,21 @@ def compute_indicators(
     so much memory waste. sad!
     """
     closes = np.array([c[4] for c in candles], dtype=float)  # index 4 = close
+    highs  = np.array([c[2] for c in candles], dtype=float)  # index 2 = high
+    lows   = np.array([c[3] for c in candles], dtype=float)  # index 3 = low
 
     ema_f    = _ema(closes, cfg.ema_fast_period)
     ema_s    = _ema(closes, cfg.ema_slow_period)
     rsi_arr  = _rsi(closes, cfg.rsi_period)
     macd_l, macd_sig, macd_hist = _macd(closes, cfg.macd_fast, cfg.macd_slow, cfg.macd_signal)
+    
+    # Calculate volatility of the last candle as a percentage of close
+    last_close = closes[-1]
+    volatility = ((highs[-1] - lows[-1]) / last_close) * 100 if last_close > 0 else 0.0
+    
+    # Extract hour of day from timestamp (UTC)
+    timestamp_ms = float(candles[-1][0])
+    hour = datetime.fromtimestamp(timestamp_ms / 1000.0, tz=timezone.utc).hour
 
     def last(arr: np.ndarray) -> float:
         """gets the last valid number without crashing."""
@@ -178,4 +194,6 @@ def compute_indicators(
         macd_line      = last(macd_l),
         macd_signal    = last(macd_sig),
         macd_histogram = last(macd_hist),
+        hour_of_day    = float(hour),
+        candle_volatility = float(volatility),
     )

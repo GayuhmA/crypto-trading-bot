@@ -1,15 +1,11 @@
 """
-exchange.py — literally just wrapping ccxt so my TA doesn't know I used it.
+exchange.py — CCXT exchange wrapper.
 
-it handles Bybit and Binance without me doing anything so, stonks right?
-shoutout to whoever wrote ccxt, carrying my whole degree.
+Provides a unified interface for Bybit and Binance futures.
+Handles testnet/sandbox configuration, market data fetching,
+and order placement.
 
-testnet:
-set cfg.testnet = True. if u set False ur gambling ur tuition money.
-
-errors:
-i just stuck try-except everywhere so it never crashes.
-a crash = F on assignment. we return 0.0 or None and pretend nothing happened.
+Errors are caught and logged — returns 0.0 or None on failure.
 """
 
 from __future__ import annotations
@@ -21,8 +17,7 @@ from logger import get_logger
 
 log = get_logger("exchange")
 
-# ── try to import ccxt gracefully basically in case i run this on my laptop
-# without installing requirements first and spending 3 hrs debugging it. ──────────
+# ── Graceful ccxt import ─────────────────────────────────────────────────────
 try:
     import ccxt  # type: ignore
     _CCXT_AVAILABLE = True
@@ -33,7 +28,7 @@ except ImportError:
 
 class ExchangeClient:
     """
-    wrapper thing so i don't have to look at awful JSON responses directly.
+    Unified exchange client wrapping CCXT for futures trading.
     """
 
     def __init__(self, cfg: BotConfig) -> None:
@@ -49,7 +44,7 @@ class ExchangeClient:
 
     @staticmethod
     def _build_exchange(cfg: BotConfig):
-        """builds the ccxt thing."""
+        """Build and configure the CCXT exchange instance."""
         exchange_class = getattr(ccxt, cfg.exchange_id)
 
         params: dict[str, Any] = {
@@ -61,7 +56,7 @@ class ExchangeClient:
             },
         }
 
-        # Bybit v5 gave me an error once, so i put this here and it fixed it idk
+
 
         exchange = exchange_class(params)
 
@@ -91,10 +86,7 @@ class ExchangeClient:
         limit:     int = 200,
     ) -> list[list]:
         """
-        fetches the candlesticks.
-
-        also it sends the active unclosed candle at the end which ruined my
-        backtest yesterday. i am dropping the last one.
+        Fetch OHLCV candles. Drops the unclosed candle at the end.
         """
         try:
             candles = self._exchange.fetch_ohlcv(symbol, timeframe, limit=limit + 1)
@@ -105,7 +97,7 @@ class ExchangeClient:
             return []
 
     def fetch_ticker_price(self, symbol: str) -> float:
-        """spits out the current price."""
+        """Fetch the latest ticker price for a symbol."""
         try:
             ticker = self._exchange.fetch_ticker(symbol)
             return float(ticker.get("last", 0.0))
@@ -114,7 +106,7 @@ class ExchangeClient:
             return 0.0
 
     def fetch_balance_usdt(self) -> float:
-        """check how broke i am."""
+        """Fetch available USDT balance."""
         try:
             balance = self._exchange.fetch_balance()
             usdt    = balance.get("USDT", {}).get("free", 0.0)
@@ -130,10 +122,8 @@ class ExchangeClient:
 
     def set_leverage(self, symbol: str, leverage: int) -> None:
         """
-        yolo leverage button.
-
-        some exchanges let us set margin mode cross here, some throw error.
-        i'm just gonna try both and close my eyes.
+        Set leverage for a symbol. Also attempts to set cross-margin mode.
+        Some exchanges may not support margin mode — errors are non-fatal.
         """
         try:
             # Ensure cross-margin mode (not isolated) — Bybit / Binance
@@ -159,9 +149,8 @@ class ExchangeClient:
         reduce_only: bool = False,
     ) -> str | None:
         """
-        places the order and takes my money.
-
-        "side" can be buy/sell or long/short bc i kept forgetting which one ccxt wants.
+        Place a market order.
+        Side accepts "buy"/"sell" or "long"/"short" (normalised internally).
         """
         # Normalise side
         ccxt_side = "buy" if side in ("buy", "long") else "sell"
