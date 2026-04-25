@@ -43,6 +43,11 @@ class BotConfig:
     rsi_period:       int   = 14
     rsi_oversold:     float = 35.0   # RSI below this → oversold (LONG entry zone)
     rsi_overbought:   float = 65.0   # RSI above this → overbought (SHORT entry zone)
+    rsi_long_min:     float = 40.0   # MIN RSI for momentum tracking (LONG)
+    rsi_long_max:     float = 55.0   # MAX RSI for momentum tracking (LONG)
+    rsi_short_min:    float = 45.0   # MIN RSI for momentum tracking (SHORT)
+    rsi_short_max:    float = 60.0   # MAX RSI for momentum tracking (SHORT)
+    momentum_spread_pct: float = 0.002 # Required EMA spread % for momentum entries
     macd_fast:        int   = 12
     macd_slow:        int   = 26
     macd_signal:      int   = 9

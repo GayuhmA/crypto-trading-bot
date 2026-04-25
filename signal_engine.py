@@ -62,17 +62,22 @@ class SignalEngine:
         min_macd_hist   = self.cfg.min_macd_histogram
         price           = s.close_price
         min_spread      = self.cfg.min_ema_spread_pct * price
+        mom_spread      = self.cfg.momentum_spread_pct * price
 
         # ── LONG conditions ───────────────────────────────────────────────
         long_ema    = s.bullish_ema                                  # fast > slow
-        long_rsi    = s.rsi < rsi_oversold                           # RSI oversold → bounce
-        long_macd   = s.macd_histogram > min_macd_hist               # positive / recovering hist
+        long_rsi_oversold = s.rsi < rsi_oversold                     # oversold bounce
+        long_rsi_momentum = (self.cfg.rsi_long_min < s.rsi < self.cfg.rsi_long_max) and (s.ema_spread > mom_spread)
+        long_rsi    = long_rsi_oversold or long_rsi_momentum
+        long_macd   = s.macd_histogram > min_macd_hist               # positive momentum
         long_spread = s.ema_spread >= min_spread                     # spread wide enough
 
         # ── SHORT conditions ──────────────────────────────────────────────
         short_ema    = s.bearish_ema                                 # fast < slow
-        short_rsi    = s.rsi > rsi_overbought                       # RSI overbought → drop
-        short_macd   = s.macd_histogram < -min_macd_hist             # negative hist
+        short_rsi_overbought = s.rsi > rsi_overbought                # overbought drop
+        short_rsi_momentum   = (self.cfg.rsi_short_min < s.rsi < self.cfg.rsi_short_max) and (s.ema_spread < -mom_spread)
+        short_rsi    = short_rsi_overbought or short_rsi_momentum
+        short_macd   = s.macd_histogram < -min_macd_hist             # negative momentum
         short_spread = s.ema_spread <= -min_spread
 
         log.debug(
@@ -89,6 +94,12 @@ class SignalEngine:
             signal = Signal.LONG
         elif short_ema and short_rsi and short_macd and short_spread:
             signal = Signal.SHORT
+
+        # Log signal before ML check to diagnose if signal logic or ML logic is blocking
+        log.info(
+            "Signal before ML: %s | RSI=%.1f | EMA_spread_pct=%.4f | MACD_hist=%.4f",
+            signal.name, s.rsi, s.ema_spread / price if price else 0.0, s.macd_histogram
+        )
 
         if signal != Signal.NONE:
             # Check ML brain confidence
